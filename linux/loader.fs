@@ -6,6 +6,7 @@ include macforth-shim.fs
 decimal
 new.window gameboard.window
 0 0 342 512 gameboard.window w.bounds
+-gfx   \ progress messages below go to the console, not the bitmap
 
 ." [common] "     2 24 thru
 ." [anima] "     76 83 thru
@@ -28,3 +29,4 @@ gameboard.window select.window
 sys.window select.window
 gameboard.window on.activate
 cr ." === ChipWits+ compiled === " cr
+\ note: graphics text is left OFF (-gfx); tests turn it on around game calls

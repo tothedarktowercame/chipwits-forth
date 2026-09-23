@@ -18,6 +18,9 @@ STRING_WORDS = {'."', ',"', '"', 'error"', 'abort"'}
 
 def screens_of(path):
     src = open(path, errors="replace").read()
+    # the re-encoding wrote high-ASCII (MacRoman TM, (c), ...) as {$XX};
+    # put the single byte back so string lengths match the original
+    src = re.sub(r'\{\$([0-9A-Fa-f]{2})\}', lambda m: chr(int(m.group(1), 16)), src)
     parts = re.split(r'═+\s+SCREEN\s+(\d+)[^\n]*\n', src)
     it = iter(parts[1:])
     return {int(n): t for n, t in zip(it, it)}
@@ -69,9 +72,9 @@ for num in range(1, top + 1):
     else:
         missing.append(num)
         text = f"( screen {num} missing from recovered disks -- stub )\n"
-        open(f"{OUT}/{num:03d}.fs", "w").write(text)
+        open(f"{OUT}/{num:03d}.fs", "w", encoding="latin-1").write(text)
         continue
-    open(f"{OUT}/{num:03d}.fs", "w").write(strip_dead(text))
+    open(f"{OUT}/{num:03d}.fs", "w", encoding="latin-1").write(strip_dead(text))
 
 print("screens:", len(prim), "+", len(filled), "from backup", filled)
 print("missing (stubbed):", missing)

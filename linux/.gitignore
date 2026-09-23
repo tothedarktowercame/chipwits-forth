@@ -2,3 +2,4 @@ pforth/
 pforth.dic
 screens/
 data/
+*.pbm

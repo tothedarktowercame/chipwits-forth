@@ -1,7 +1,7 @@
 \ macforth-shim.fs -- MacForth (Mac 128K) compatibility layer for pforth (32-bit build)
 \ Lets the original 1986 ChipWits+ source compile & run on Linux.
-\ Graphics/sound/file words are stubs with faithful arities for now;
-\ rects, points and OffsetRect are implemented for real.
+\ Rendering is real (see qd.fs): 1-bit bitmaps, patterns, CopyBits, bitmap text.
+\ Menus/controls/TextEdit/sound remain arity-faithful stubs.
 
 decimal
 
@@ -97,7 +97,7 @@ first-buf constant first
    dup 16 rshift dup 32767 > if 65536 - then
    swap 65535 and dup 32767 > if 65536 - then ;
 : xy>point ( x y -- p ) 65535 and swap 65535 and 16 lshift or ;
-: >rect ( x y -- y x ) swap ;  \ arity guess; revisit on use
+: >rect ( x y -- p ) xy>point ;   \ used by PICT.IN.RECT (screen 190)
 \ MAKE.RECT builds a rect VALUE from two corners (used as: make.rect drop , ,)
 : make.rect { x1 y1 x2 y2 -- pbr ptl flag }
    x2 y2 xy>point  x1 y1 xy>point  0 ;
@@ -109,67 +109,67 @@ first-buf constant first
    a w@ dv + a w!  a 2+ w@ dh + a 2+ w!
    a 4 + w@ dv + a 4 + w!  a 6 + w@ dh + a 6 + w! ;
 
-\ ==================== toolbox trap defining words ====================
-\ Screen 076 defines CopyBits etc. via A-trap numbers; dispatch on trap#.
-: do-trap ( ... trap# -- ... )
-   case
-     43244 of drop drop drop drop drop drop endof   \ A8EC CopyBits (6 args)
-     43125 of drop endof                            \ A875 SetPortBits
-     43254 of 2drop endof                           \ A8F6 DrawPicture
-     43131 of drop endof                            \ A87B ClipRect
-     43176 of (offsetrect) endof                    \ A8A8 OffsetRect (real)
-     43225 of drop endof                            \ A8D9 DisposeRgn
-     dup . ." <- unknown A-trap, stack may drift" cr
-   endcase ;
-: mt    ( trap# "name" -- ) create , does> @ do-trap ;
-: w>mt  ( trap# "name" -- ) create , does> @ do-trap ;
-: 2w>mt ( trap# "name" -- ) create , does> @ do-trap ;
-: func>l ( trap# "name" -- ) create , does> drop 0 ;   \ returns nil handle
+\ patterns: 8-byte bit images
+create white 0 , 0 ,
+create black -1 , -1 ,
+create gray  hex AA55AA55 , 55AA55AA , decimal
+: pattern ( ? -- ) ;   \ revisit on use
 
 \ ==================== screen / windows ====================
 \ Classic Mac: 512x342 1-bit screen; every window's portBits points at it.
 \ Window struct: +0 pad(2), +2 BitMap{ baseAddr(4) rowBytes(2) bounds(8) }
 create the-screen 512 8 / 342 * allot
+the-screen 512 8 / 342 * erase
+variable cur-bmap
 : (win) ( -- ) 0 w, the-screen , 64 w, 0 w, 0 w, 342 w, 512 w, 144 allot ;
 create sys.window (win)
+sys.window 2+ cur-bmap !
 : new.window ( "name" -- ) create (win) ;
 variable current-window  sys.window current-window !
-: select.window ( w -- ) current-window ! ;
+: select.window ( w -- ) dup current-window ! 2+ cur-bmap ! ;
 : add.window ( w -- ) drop ;
 : get.window ( -- w ) current-window @ ;
 : w.bounds ( t l b r w -- ) drop 2drop 2drop ;
 : on.activate ( w -- ) drop ;
 : window ( w -- ) select.window ;
-: close ( w|file# -- ) drop ;
 : +wrefcon ( w -- a ) 140 + ;
 
-\ ==================== QuickDraw drawing (stubs, faithful arity) ====================
+\ ==================== transfer-mode constants ====================
 0 constant srccopy   1 constant srcor    2 constant srcxor   3 constant srcbic
 8 constant patcopy   9 constant pator   10 constant patxor  11 constant patbic
-0 constant frame  1 constant paint  2 constant clear  3 constant invert-verb
-: rectangle ( t l b r mode -- ) drop 2drop 2drop ;
-: oval      ( t l b r mode -- ) drop 2drop 2drop ;
-: rrectangle ( t l b r ow oh mode -- ) drop 2drop 2drop 2drop ;
-: vector    ( x1 y1 x2 y2 -- ) 2drop 2drop ;
-: move.to   ( x y -- ) 2drop ;
-: draw.to   ( x y -- ) 2drop ;
-: rmove     ( dx dy -- ) 2drop ;
-: rdraw     ( dx dy -- ) 2drop ;
-: @pen      ( -- x y ) 0 0 ;
-: pensize   ( w h -- ) 2drop ;
-: penmode   ( n -- ) drop ;
-: penpat    ( pat -- ) drop ;
-: backpat   ( pat -- ) drop ;
-: ginit     ( -- ) ;
+0 constant frame  1 constant paint  2 constant clear
+
+\ ==================== the renderer ====================
+include qd.fs
+\ QD verb, shadows bitwise INVERT (game code never uses the bitwise one;
+\ qd.fs already bound the bitwise version internally)
+3 constant invert
+
+\ ==================== toolbox trap defining words ====================
+\ Screen 076/190 define CopyBits etc. via A-trap numbers; dispatch on trap#.
+: do-trap ( ... trap# -- ... )
+   case
+     43244 of (copybits) endof                      \ A8EC CopyBits (real)
+     43125 of cur-bmap ! endof                      \ A875 SetPortBits (real)
+     43254 of 2drop endof                           \ A8F6 DrawPicture (stub)
+     43131 of drop endof                            \ A87B ClipRect
+     43225 of drop endof                            \ A8D9 DisposeRgn
+     43427 of drop endof                            \ A9A3 ReleaseResource
+     dup . ." <- unknown A-trap, stack may drift" cr
+   endcase ;
+: mt    ( trap# "name" -- ) create , does> @ do-trap ;
+: w>mt  ( trap# "name" -- ) create , does> @ do-trap ;
+: 2w>mt ( trap# "name" -- ) create ,
+   does> @ 43176 = if (offsetrect) else drop 2drop drop then ;  \ A8A8 OffsetRect
+: func>l ( trap# "name" -- ) create , does> drop 0 ;   \ returns nil handle
+
+\ ==================== cursor / misc graphics ====================
 : hide.cursor ( -- ) ;  : show.cursor ( -- ) ;  : init.cursor ( -- ) ;
 : set.cursor ( c -- ) drop ;
 0 constant ibeam
 0 constant plain   8 constant outline
 : textfont  ( n -- ) drop ;
-: textsize  ( n -- ) drop ;
 : textstyle ( n -- ) drop ;
-: textmode  ( n -- ) drop ;
-: stringwidth ( c$ -- w ) count nip 8 * ;
 : scroll ( rect dx dy rgn -- ) 2drop 2drop ;
 : global>local ( p -- p ) ;
 variable xoff-v variable yoff-v variable xpiv-v variable ypiv-v
@@ -177,13 +177,9 @@ variable xoff-v variable yoff-v variable xpiv-v variable ypiv-v
 : xypivot  ( x y -- ) ypiv-v ! xpiv-v ! ;
 : get.xyoffset ( -- x y ) xoff-v @ yoff-v @ ;
 : get.xypivot  ( -- x y ) xpiv-v @ ypiv-v @ ;
-create white 0 , 0 ,
-create black -1 , -1 ,
-create gray  hex AA55AA55 , 55AA55AA , decimal
-: pattern ( ? -- ) ;   \ revisit on use
 
 \ ==================== menus (stubs) ====================
-: new.menu ( ? -- ? ) ;          \ revisit on use
+: new.menu ( flags title$ menu# -- ) drop 2drop ;
 : delete.menu ( n -- ) drop ;
 : draw.menu.bar ( -- ) ;
 : hilite.menu ( n -- ) drop ;
@@ -194,7 +190,14 @@ create gray  hex AA55AA55 , 55AA55AA , decimal
 : set.item$   ( ? ? m -- ) drop 2drop ;
 : append.items ( ? m -- ) 2drop ;
 : in.menubar  ( -- code ) 1 ;
-: menu.selection: ( ? -- ) ;     \ revisit on use
+\ MENU.SELECTION: everything after it in the definition is the menu's handler
+\ ( item# -- ). During setup the word must END there; in dispatch mode the
+\ handler runs with the picked item number.  Dispatch: set menu-item and
+\ menu-mode, call the menu word, reset menu-mode.
+variable menu-item   variable menu-mode
+: (menu.sel) ( menu# -- item# | returns-from-caller )
+   drop menu-mode @ if menu-item @ else r> drop then ;
+: menu.selection: postpone (menu.sel) ; immediate
 
 \ ==================== events (headless: nothing happens) ====================
 : do.events ( -- event|0 ) 0 ;
@@ -206,25 +209,31 @@ create gray  hex AA55AA55 , 55AA55AA , decimal
 : still.down ( -- f ) 0 ;
 : ?keystroke ( -- 0 | c -1 ) 0 ;
 
-\ ==================== controls / TextEdit (stubs) ====================
+\ ==================== controls / TextEdit ====================
+\ One implicit TE record (the game edits one name at a time).  Classic TERec
+\ layout is honored where the game peeks: +60 teLength (w), +62 hText (handle).
+create te-text 256 allot
+create te-hText te-text ,
 create te-rec 512 allot
+te-rec 512 erase
+te-hText te-rec 62 + !
 : tenew ( r1 r2 -- h ) 2drop te-rec ;
-: terecord ( -- ? ) te-rec ;
-: teactivate ( h -- ) drop ;  : tedeactivate ( h -- ) drop ;
-: teidle ( h -- ) drop ;
-: tekey ( c h -- ) 2drop ;
-: teset.select ( a b h -- ) drop 2drop ;
-: teset.text ( a n h -- ) drop 2drop ;
-: teupdate ( r h -- ) 2drop ;
-: text.click ( p ? h -- ) drop 2drop ;
-: get.control ( ? -- ? ) ;      \ revisit on use
-: set.control ( ? -- ? ) ;      \ revisit on use
+: terecord ( w -- te ) drop te-rec ;
+: teactivate ( -- ) ;  : tedeactivate ( -- ) ;
+: teidle ( -- ) ;
+: tekey ( c -- ) drop ;
+: teset.select ( a b -- ) 2drop ;
+: teset.text ( a n -- ) 255 min dup te-rec 60 + w! te-text swap cmove ;
+: teupdate ( r -- ) drop ;
+: text.click ( -- ) ;
+: get.control ( ctl -- v ) drop -1 ;   \ headless: dialogs resolve instantly
+: set.control ( ctl v -- ) 2drop ;
 : hilite.control ( ? c -- ) 2drop ;
 : kill.controls ( w -- ) drop ;
 : this.control ( -- ? ) 0 ;
 : toggle.control ( c -- ) drop ;
 : track.control ( ? -- ? ) 0 ;
-: ?in.control ( p -- c t | f ) drop 0 ;
+: ?in.control ( -- f ) 0 ;
 variable ctl-counter
 : binary.control ( w x y title$ value kind -- ctl )
    2drop drop 2drop drop  1 ctl-counter +!  ctl-counter @ ;
@@ -236,7 +245,7 @@ variable ctl-counter
 : hush ( -- ) ;
 
 \ ==================== files (real, backed by recovered CW+ data files) ====================
-\ MacForth file channels 0..15; data files live in chipwits-native/data/
+\ MacForth file channels 0..15; data files live in data/
 create file-names 16 64 * allot   file-names 16 64 * erase
 create file-fds   16 cells allot  file-fds 16 cells erase
 create file-lens  16 cells allot  file-lens 16 cells erase
@@ -260,7 +269,7 @@ create file-lens  16 cells allot  file-lens 16 cells erase
 : close ( f#|window -- ) file? if
      ffd dup @ ?dup if close-file drop then 0 swap !
    else drop then ;
-: get.eof ( f# -- n ) ffd @ ?dup if file-size drop drop ( lo hi->lo ) else 0 then ;
+: get.eof ( f# -- n ) ffd @ ?dup if file-size drop drop else 0 then ;
 variable cur-fd
 : read.virtual { a len off f# -- }
    f# ffd @ ?dup if cur-fd !
@@ -283,7 +292,8 @@ variable cur-fd
      a f# flen @ cur-fd @ write-file drop
    then ;
 : set.rec.len ( len f# -- ) flen ! ;
-: get.picture ( n f# -- h ) 2drop 0 ;   \ PICT decoding: later (graphics pass)
+create fake-pict 16 allot
+: get.picture ( pict# -- h ) drop fake-pict ;  \ PICT decoding: later
 : ?file.error ( -- ) ;
 : close.all ( -- ) ;
 : copy ( ? ? -- ) 2drop ;
