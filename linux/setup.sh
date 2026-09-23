@@ -7,10 +7,12 @@ cd "$(dirname "$0")"
 # 1. pforth, built with 32-bit cells (MacForth's cell size is load-bearing:
 #    struct layouts and 4*-indexing all assume 4-byte cells).
 #    Needs: gcc-multilib (Debian/Ubuntu: apt install gcc-multilib).
-if [ ! -x pforth/platforms/unix/pforth ]; then
-    [ -d pforth ] || git clone --depth 1 https://github.com/philburk/pforth
-    make -C pforth/platforms/unix CC="gcc -m32"
+[ -d pforth ] || git clone --depth 1 https://github.com/philburk/pforth
+if ! cmp -s pfcustom.c pforth/csrc/pfcustom.c; then
+    # our C blitter primitives (CBLIT/CFILLPAT) replace the stock examples
+    cp pfcustom.c pforth/csrc/pfcustom.c
 fi
+make -C pforth/platforms/unix CC="gcc -m32"
 cp pforth/platforms/unix/pforth.dic .
 
 # 2. Split the recovered MacForth source into per-screen files.

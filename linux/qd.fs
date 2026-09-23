@@ -64,11 +64,16 @@ ginit  1 text-mode !  12 text-size !  +gfx
 : pat-bit { x y pat -- v }
    pat y 7 and + c@ 128 x 7 and rshift and 0<> 1 and ;
 
-\ fill [xa,xb) x [ya,yb) with pattern through mode
+\ fill [xa,xb) x [ya,yb) with pattern through mode -- C core (CFILLPAT)
+create fp( 12 cells allot
 : (fill) { xa ya xb yb pat mode bm -- }
-   yb ya ?do xb xa ?do
-     i j pat pat-bit  i j bm mode blit-px
-   loop loop ;
+   bm 0= if exit then
+   bm bm-base fp( !          bm bm-rb fp( 4 + !
+   bm bm-l fp( 8 + !         bm bm-t fp( 12 + !
+   bm bm-r bm bm-l - fp( 16 + !   bm bm-b bm bm-t - fp( 20 + !
+   xa fp( 24 + !  ya fp( 28 + !  xb fp( 32 + !  yb fp( 36 + !
+   pat fp( 40 + !  mode fp( 44 + !
+   fp( cfillpat ;
 
 \ ---------- rect / oval / line verbs ----------
 : minmax ( a b -- min max ) 2dup > if swap then ;
@@ -127,14 +132,19 @@ ginit  1 text-mode !  12 text-size !  +gfx
 : rdraw ( dx dy -- ) swap pen-x @ + swap pen-y @ + draw.to ;
 
 \ ---------- CopyBits: equal-size blit, rects in each bitmap's bounds space ----------
-: (copybits) { src dst sr dr mode rgn | st sl dt dl w h -- }
-   sr w@ -> st   sr 2+ w@ -> sl
-   dr w@ -> dt   dr 2+ w@ -> dl
-   sr 6 + w@ sl - -> w   sr 4 + w@ st - -> h
-   h 0 ?do w 0 ?do
-     sl i + st j + src px@
-     dl i + dt j + dst mode 3 and blit-px
-   loop loop ;
+\ C core (CBLIT); rect coords are translated to bitmap-local before the call.
+create cb( 15 cells allot
+: (copybits) { src dst sr dr mode rgn -- }
+   src 0= dst 0= or if exit then
+   src bm-base cb( !          src bm-rb cb( 4 + !
+   sr 2+ w@ src bm-l - cb( 8 + !    sr w@ src bm-t - cb( 12 + !
+   dst bm-base cb( 16 + !     dst bm-rb cb( 20 + !
+   dr 2+ w@ dst bm-l - cb( 24 + !   dr w@ dst bm-t - cb( 28 + !
+   sr 6 + w@ sr 2+ w@ - cb( 32 + !  sr 4 + w@ sr w@ - cb( 36 + !
+   mode cb( 40 + !
+   src bm-r src bm-l - cb( 44 + !   src bm-b src bm-t - cb( 48 + !
+   dst bm-r dst bm-l - cb( 52 + !   dst bm-b dst bm-t - cb( 56 + !
+   cb( cblit ;
 
 \ ---------- text: 8x8 font, scaled by textsize (12->1x, 24->2x, 36->3x) ----------
 : gscale ( -- s ) text-size @ dup 16 < if drop 1 else 28 < if 2 else 3 then then ;

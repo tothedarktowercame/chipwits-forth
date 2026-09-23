@@ -14,8 +14,16 @@ decimal
 \ signed 16-bit fetch (rect fields hold negative coords)
 : w@  w@ dup 32767 > if 65536 - then ;
 
+\ A classic Mac app started with zeroed fresh memory, and the game relies on
+\ it (bouncer.state, robot.program, ...).  pforth's dictionary is garbage, so
+\ zero everything VARIABLE and ALLOT hand out.
+: variable create 0 , ;
+: allot ( n -- ) here over allot swap erase ;
+
 \ MacForth CONSTANT has a patchable body (source does: ' name ! )
 : constant create , does> @ ;
+\ native tick ( "name" -- xt ), parsed at run time -- kept for vectoring below
+: nt' ' ;
 \ MacForth ' returns the patchable body; inside a definition it binds at compile time
 : '  ' >body state @ if postpone literal then ; immediate
 
@@ -101,10 +109,16 @@ first-buf constant first
 \ MAKE.RECT builds a rect VALUE from two corners (used as: make.rect drop , ,)
 : make.rect { x1 y1 x2 y2 -- pbr ptl flag }
    x2 y2 xy>point  x1 y1 xy>point  0 ;
-: ptinrect { p a -- flag }
-   p point>xy { x y }
-   y a w@ < not  y a 4 + w@ < and
-   x a 2+ w@ < not and  x a 6 + w@ < and ;
+\ no locals here: pforth miscompiles a second { } block mid-definition
+variable pt-x  variable pt-y
+: ptinrect ( p a -- flag )
+   swap point>xy pt-y ! pt-x !    ( a )
+   pt-y @ over w@ < not           ( a y>=t )
+   over 4 + w@ pt-y @ > and      ( a y-ok )
+   swap                           ( y-ok a )
+   pt-x @ over 2+ w@ < not        ( y-ok a x>=l )
+   swap 6 + w@ pt-x @ > and      ( y-ok x-ok )
+   and ;
 : (offsetrect) { a dh dv -- }
    a w@ dv + a w!  a 2+ w@ dh + a 2+ w!
    a 4 + w@ dv + a 4 + w!  a 6 + w@ dh + a 6 + w! ;
@@ -199,15 +213,21 @@ variable menu-item   variable menu-mode
    drop menu-mode @ if menu-item @ else r> drop then ;
 : menu.selection: postpone (menu.sel) ; immediate
 
-\ ==================== events (headless: nothing happens) ====================
-: do.events ( -- event|0 ) 0 ;
+\ ==================== events (vectored; live.fs rebinds for real input) ====================
+variable 'do.events   variable '@mouse   variable 'mouse.was..
+variable 'still.down  variable '?keystroke
+: (ev0) ( -- 0 ) 0 ;
+nt' (ev0) 'do.events !    nt' (ev0) '@mouse !
+nt' (ev0) 'mouse.was.. !  nt' (ev0) 'still.down !
+nt' (ev0) '?keystroke !
+: do.events ( -- event|0 ) 'do.events @ execute ;
+: @mouse ( -- p ) '@mouse @ execute ;
+: mouse.was.. ( -- p ) 'mouse.was.. @ execute ;
+: still.down ( -- f ) 'still.down @ execute ;
+: ?keystroke ( -- 0 | c -1 ) '?keystroke @ execute ;
 : flush.events ( -- ) ;
 6 constant mouse.down
-: mouse.was.. ( -- code ) 0 ;
-: @mouse ( -- p ) 0 ;
-: @mousexy ( -- x y ) 0 0 ;
-: still.down ( -- f ) 0 ;
-: ?keystroke ( -- 0 | c -1 ) 0 ;
+: @mousexy ( -- x y ) @mouse point>xy ;
 
 \ ==================== controls / TextEdit ====================
 \ One implicit TE record (the game edits one name at a time).  Classic TERec
@@ -295,7 +315,9 @@ variable cur-fd
 create fake-pict 16 allot
 : get.picture ( pict# -- h ) drop fake-pict ;  \ PICT decoding: later
 : ?file.error ( -- ) ;
-: close.all ( -- ) ;
+variable 'close-hook
+: close.all ( -- ) 16 0 do i close loop
+   'close-hook @ ?dup if execute then ;
 : copy ( ? ? -- ) 2drop ;
 
 \ ==================== heap / memory management ====================
