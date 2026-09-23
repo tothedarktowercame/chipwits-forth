@@ -1,11 +1,10 @@
 \ qd.fs -- QuickDraw-subset renderer for the ChipWits+ native port.
 \ Real 1-bit bitmap graphics: pixels, patterns, rect verbs, lines, ovals,
-\ CopyBits with the four transfer modes, and 8x8 bitmap-font text.
+\ CopyBits with the four transfer modes, PICTs, and the Mac bitmap fonts.
 \ Included by macforth-shim.fs after the window section (needs cur-bmap,
 \ the-screen, rects, white/black/gray patterns).
 
 decimal
-include font8x8.fs
 
 \ ---------- BitMap accessors: baseAddr(4) rowBytes(2) bounds t l b r ----------
 : bm-base ( bm -- a ) @ ;
@@ -146,22 +145,128 @@ create cb( 15 cells allot
    dst bm-r dst bm-l - cb( 52 + !   dst bm-b dst bm-t - cb( 56 + !
    cb( cblit ;
 
-\ ---------- text: 8x8 font, scaled by textsize (12->1x, 24->2x, 36->3x) ----------
-: gscale ( -- s ) text-size @ dup 16 < if drop 1 else 28 < if 2 else 3 then then ;
-: gemit { c | g s x0 y0 v -- }
+\ ---------- DrawPicture: pre-rendered PICTs (see get.picture in the shim) ----------
+\ The picture's frame maps onto the destination rect; equal sizes go
+\ through CopyBits, anything else is scaled nearest-neighbour.
+create pic-bm 14 allot
+: (drawpicture) { h r | p pw ph dw dh -- }
+   h 0= if exit then  h @ -> p
+   p 12 + pic-bm !  p 8 + w@ pic-bm 4 + w!  p pic-bm 6 + 8 cmove
+   p 6 + w@ p 2+ w@ - -> pw   p 4 + w@ p w@ - -> ph
+   r 6 + w@ r 2+ w@ - -> dw   r 4 + w@ r w@ - -> dh
+   pw dw = ph dh = and if
+     pic-bm cur-bmap @ pic-bm 6 + r srccopy 0 (copybits) exit
+   then
+   dw 1 < dh 1 < or if exit then
+   dh 0 do dw 0 do
+     p 2+ w@ i pw * dw / +  p w@ j ph * dh / +  pic-bm px@
+     r 2+ w@ i +  r w@ j +  cur-bmap @ px!
+   loop loop ;
+
+\ ---------- text: the Mac's own bitmap fonts ----------
+\ tools/extract_resources.py converts the FONT resources from the disk
+\ image to data/font-NNN.bin (NNN = family*128 + size; layout documented
+\ there).  Chicago 12 is the system font (textfont 0), which is what the
+\ game draws in.  Other sizes scale the nearest strike, as QuickDraw does.
+variable text-font  variable text-face
+: textfont ( n -- ) text-font ! ;
+: textstyle ( n -- ) text-face ! ;    \ 1 bold, 8 outline (others ignored)
+: sw@ ( a -- n ) w@ dup 32767 > if 65536 - then ;
+
+create path-buf 32 allot
+: path+ ( len a u -- len' ) >r over path-buf + r@ cmove r> + ;
+: data-path ( id a u -- a u )   \ "data/<a u><id>.bin"
+   0 s" data/" path+ -rot path+  swap 0 <# #s #> path+  s" .bin" path+
+   path-buf swap ;
+
+create fonts 8 2* cells allot   \ [id][record] pairs
+variable nfonts
+: load-font { id | fid len a -- }
+   id s" font-" data-path r/o open-file
+   abort" missing data/font-*.bin -- run ./setup.sh" -> fid
+   fid file-size 2drop -> len  len allocate drop -> a
+   a len fid read-file 2drop  fid close-file drop
+   id  fonts nfonts @ 2* cells + !  a  fonts nfonts @ 2* cells + cell+ !
+   1 nfonts +! ;
+12 load-font  393 load-font  396 load-font  521 load-font  524 load-font
+: font-rec ( id -- rec|0 )
+   nfonts @ 0 ?do fonts i 2* cells + @ over = if
+     drop fonts i 2* cells + cell+ @ unloop exit then loop drop 0 ;
+
+\ the strike for text-font at text-size, and that strike's point size
+: strike-size ( -- 9|12 ) text-size @ 10 < if 9 else 12 then ;
+: cur-font ( -- rec base )
+   text-font @ 128 * strike-size + font-rec ?dup if strike-size exit then
+   text-font @ 128 * 12 + font-rec ?dup if 12 exit then
+   12 font-rec 12 ;                              \ fall back to Chicago 12
+: f-first sw@ ;  : f-last 2 + sw@ ;  : f-ascent 4 + sw@ ;
+: f-height 10 + sw@ ;  : f-rb 12 + sw@ ;  : f-kern 14 + sw@ ;
+: f-n ( rec -- n ) dup f-last swap f-first - 3 + ;
+: f-loc ( idx rec -- n ) swap 2* + 16 + w@ ;
+: f-ow  ( idx rec -- n ) dup f-n 2* 16 + + swap 2* + w@ ;
+: f-strike ( rec -- a ) dup f-n 4 * 16 + + ;
+\ glyph slot for c: the font's missing-glyph slot if it has no such char
+: f-idx { c rec | i -- i }
+   c rec f-first - -> i
+   c rec f-first < c rec f-last > or if rec f-n 2 - -> i then
+   i rec f-ow 65535 = if rec f-n 2 - -> i then  i ;
+
+variable g-rec  variable g-base  variable g-w
+: g-sc ( n -- n' ) text-size @ * g-base @ / ;
+: g-bold? text-face @ 1 and 0<> ;  : g-outl? text-face @ 8 and 0<> ;
+: g-adv ( idx -- w )   \ unscaled advance, style widening included
+   g-rec @ f-ow 255 and  g-bold? 1 and +  g-outl? 1 and + ;
+
+\ glyph mask: one byte per pixel, 1px margin all round for styling
+64 constant mw   24 constant mh
+create gm  mw mh * allot   create gm2 mw mh * allot
+: gm@ ( x y -- v ) mw * + gm + c@ ;
+: gm! ( v x y -- ) mw * + gm + c! ;
+: g-bit ( col row -- v )
+   g-rec @ f-rb * over 3 rshift + g-rec @ f-strike + c@
+   128 rot 7 and rshift and 0<> 1 and ;
+: g-load { idx | l0 w -- }   \ strike glyph -> gm, offset (1,1)
+   gm mw mh * erase
+   idx g-rec @ f-loc -> l0   idx 1+ g-rec @ f-loc l0 - mw 3 - min -> w
+   w g-w !
+   g-rec @ f-height mh 2 - min 0 ?do  w 0 ?do
+     l0 i + j g-bit  i 1+ j 1+ gm!
+   loop loop ;
+: g-embolden ( -- )          \ QuickDraw bold: ink OR'd one pixel right
+   mh 0 do 1 mw 1- do  i 1- j gm@ if 1 i j gm! then  -1 +loop loop ;
+: g-outline ( -- )           \ outline: the ring around the ink, ink cleared
+   gm gm2 mw mh * cmove
+   mh 1- 1 do mw 1- 1 do
+     i j mw * + gm2 + dup c@ 0= if
+       dup 1- c@ over 1+ c@ or over mw - c@ or over mw + c@ or
+       i j gm!
+     else 0 i j gm! then drop
+   loop loop ;
+
+\ paint mask pixel (i,j) as a scaled block, glyph box origin at (x,y)
+: g-px { i j x y -- }
+   x i 1- g-sc +  y j 1- g-sc +  x i g-sc +  y j g-sc +
+   black 8 cur-bmap @ (fill) ;
+: gemit { c | idx x y adv -- }
    gfx-text @ 0= if exit then
-   c 127 and 8 * font8x8 + -> g
-   gscale -> s
-   pen-x @ -> x0   pen-y @ 7 s * - -> y0
-   8 0 do 8 0 do
-     g j + c@ 128 i rshift and 0<> 1 and -> v
-     v text-mode @ 3 and 0= or if
-       x0 i s * +  y0 j s * +  over s +  over s +
-       2swap 2swap v if black else white then 8 cur-bmap @ (fill)
-     then
+   cur-font g-base ! g-rec !
+   c g-rec @ f-idx -> idx
+   idx g-adv g-sc -> adv
+   pen-y @ g-rec @ f-ascent g-sc - -> y
+   text-mode @ 3 and 0= if            \ srcCopy: the character cell goes white
+     pen-x @ y  pen-x @ adv +  y g-rec @ f-height g-sc +
+     white 8 cur-bmap @ (fill)
+   then
+   pen-x @ g-rec @ f-kern idx g-rec @ f-ow 8 rshift + g-sc + -> x
+   idx g-load
+   g-bold? if g-embolden then
+   g-outl? if g-outline then
+   g-rec @ f-height 2 + mh min 0 do  g-w @ 3 + 0 do
+     i j gm@ if i j x y g-px then
    loop loop
-   8 s * pen-x +! ;
-: stringwidth ( c$ -- w ) count nip 8 * gscale * ;
+   adv pen-x +! ;
+: charwidth ( c -- w ) cur-font g-base ! g-rec !  g-rec @ f-idx g-adv g-sc ;
+: stringwidth ( c$ -- w ) 0 swap count over + swap ?do i c@ charwidth + loop ;
 
 \ console words also draw at the pen (MacForth console = the screen)
 : ctype type ;

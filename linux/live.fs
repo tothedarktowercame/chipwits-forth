@@ -6,13 +6,20 @@ decimal
 
 variable mx  variable my  variable btn  variable downpt
 variable keych  variable keyf
-variable ev-fd  variable ev-off  variable fr-fd
+variable ev-fd  variable ev-off  variable fr-fd  variable snd-fd
 variable tick   variable ev-x  variable ev-y
 
 : open-live
    s" live/input.bin" r/w open-file abort" run play.sh (no live/input.bin)" ev-fd !
    0 ev-off !
-   s" live/frame.raw" w/o create-file abort" cannot create live/frame.raw" fr-fd ! ;
+   s" live/frame.raw" w/o create-file abort" cannot create live/frame.raw" fr-fd !
+   s" live/sound.bin" w/o create-file abort" cannot create live/sound.bin" snd-fd ! ;
+
+\ notes for the browser: [duration][volume][freq*10][pad] as 16-bit LE
+create sndbuf 8 allot
+: live-tone ( dur vol f10 -- )
+   sndbuf 4 + w!  sndbuf 2+ w!  sndbuf w!  0 sndbuf 6 + w!
+   snd-fd @ ?dup if >r sndbuf 8 r@ write-file drop r> flush-file drop then ;
 
 create evbuf 8 allot
 : read-event ( -- t x y true | false )
@@ -70,7 +77,8 @@ variable disp-depth
 
 : live-close ( -- )
    ev-fd @ ?dup if close-file drop 0 ev-fd ! then
-   fr-fd @ ?dup if close-file drop 0 fr-fd ! then ;
+   fr-fd @ ?dup if close-file drop 0 fr-fd ! then
+   snd-fd @ ?dup if close-file drop 0 snd-fd ! then ;
 nt' live-close 'close-hook !
 
 nt' live-events 'do.events !
@@ -78,6 +86,7 @@ nt' live-@mouse '@mouse !
 nt' live-was    'mouse.was.. !
 nt' live-down?  'still.down !
 nt' live-key    '?keystroke !
+nt' live-tone   'tone-hook !
 
 : play
    back.buffer back.len@ erase   anim.buffer anim.len@ erase

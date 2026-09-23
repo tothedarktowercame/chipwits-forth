@@ -1,8 +1,10 @@
 /* pfcustom.c -- ChipWits+ native port: C cores for the QuickDraw renderer.
 **
 ** Replaces pforth's stock csrc/pfcustom.c (setup.sh copies it in before make).
-** Two primitives, each taking one parameter-block address from the stack;
+** CBLIT/CFILLPAT each take one parameter-block address from the stack;
 ** all fields are 32-bit cells.  Bits are MSB = leftmost pixel, 1 = black.
+** CMSEC ( -- ms ) is a monotonic millisecond clock (wraps; compare by
+** difference) -- the sound queue's timekeeper.
 **
 ** CBLIT block:  0 srcBase 1 srcRowBytes 2 sx 3 sy   (src local top-left)
 **               4 dstBase 5 dstRowBytes 6 dx 7 dy   (dst local top-left)
@@ -18,9 +20,17 @@
 
 #include "pf_all.h"
 #include <stdint.h>
+#include <time.h>
 
 static void CBlit( cell_t param );
 static void CFillPat( cell_t param );
+
+static cell_t CMsec( void )
+{
+    struct timespec ts;
+    clock_gettime( CLOCK_MONOTONIC, &ts );
+    return (cell_t) (uint32_t) (ts.tv_sec * 1000u + ts.tv_nsec / 1000000);
+}
 
 static void CBlit( cell_t param )
 {
@@ -93,19 +103,21 @@ static void CFillPat( cell_t param )
 }
 
 #ifdef PF_NO_GLOBAL_INIT
-#define NUM_CUSTOM_FUNCTIONS  (2)
+#define NUM_CUSTOM_FUNCTIONS  (3)
 CFunc0 CustomFunctionTable[NUM_CUSTOM_FUNCTIONS];
 Err LoadCustomFunctionTable( void )
 {
     CustomFunctionTable[0] = (CFunc0) CBlit;
     CustomFunctionTable[1] = (CFunc0) CFillPat;
+    CustomFunctionTable[2] = (CFunc0) CMsec;
     return 0;
 }
 #else
 CFunc0 CustomFunctionTable[] =
 {
     (CFunc0) CBlit,
-    (CFunc0) CFillPat
+    (CFunc0) CFillPat,
+    (CFunc0) CMsec
 };
 #endif
 
@@ -117,6 +129,8 @@ Err CompileCustomFunctions( void )
     err = CreateGlueToC( "CBLIT", i++, C_RETURNS_VOID, 1 );
     if( err < 0 ) return err;
     err = CreateGlueToC( "CFILLPAT", i++, C_RETURNS_VOID, 1 );
+    if( err < 0 ) return err;
+    err = CreateGlueToC( "CMSEC", i++, C_RETURNS_VALUE, 0 );
     if( err < 0 ) return err;
     return 0;
 }

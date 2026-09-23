@@ -7,11 +7,12 @@ Toolbox, and the recovered data files supply the missions, robots and art.
 
 ![The game screen rendered natively](docs/native-linux-render.png)
 
-*The real thing: `Init.ChipWits` + `start.game` running headless on Linux,
-drawn by the original game code through a QuickDraw-subset renderer
-(`qd.fs`) into a 512×342 1-bit framebuffer, using the recovered
-sprite sheets, Doug Sharp's saved robot, and his last-played mission
-(Memory Lanes) restored from the recovered stats file.*
+*The real thing: `Init.ChipWits` + `start.game` + 30 robot cycles running
+headless on Linux, drawn by the original game code through a
+QuickDraw-subset renderer (`qd.fs`) into a 512×342 1-bit framebuffer —
+the recovered sprite sheets, the mission's own wall and floor tiles and
+the Chicago system font (both pulled from the disk image's resource
+forks), and Doug Sharp's saved robot.*
 
 ## Quick start
 
@@ -19,12 +20,15 @@ Needs `gcc-multilib` (for the 32-bit pforth build), `python3`, `git`, and
 ImageMagick only if you regenerate the art.
 
     ./setup.sh      # once: builds 32-bit pforth, generates screens/ from
-                    # ../mac/forth, copies the data files
+                    # ../mac/forth, copies the data files, extracts the
+                    # PICTs and fonts from the CW+ disk image
     ./play.sh       # the game: Forth runs in this terminal,
                     # UI at http://localhost:8047 (./play.sh PORT to change)
     ./run-test.sh   # headless VM smoke test: a wall-following robot
 
-In the browser, pick **Games > Start / End Mission**.  `serve.py` listens
+In the browser, pick **Games > Start / End Mission**.  Sound starts with
+your first click or key (browsers keep pages silent until then);
+Options > Sound On/Off is the game's own toggle.  `serve.py` listens
 on all interfaces with no authentication; on a shared machine, firewall
 the port or reach it through an SSH tunnel (`ssh -L 8047:localhost:8047`).
 
@@ -40,13 +44,28 @@ the whole show: start missions from the Games menu, watch the robot run
 with the live debug trace, open the Workshop and edit chips with the mouse
 ([`docs/native-linux-workshop.png`](docs/native-linux-workshop.png) shows
 Doug Sharp's saved robot program rendered as its wired chip network).
-Options > Quit exits cleanly.  The browser page polls the 1-bit
-framebuffer (~11 fps) and posts mouse/key/menu events back; `serve.py` is
-stdlib-only.
+Options > Quit exits cleanly.  A websocket carries everything: `serve.py`
+pushes each changed 1-bit frame (~30 fps) and each note as the game queues
+it, and the page sends mouse/key/menu events back.  If the socket can't be
+opened (a proxy that refuses upgrades), the page falls back to polling
+`/frame` and posting `/input`, without sound.  `serve.py` is stdlib-only.
 
 - Rendering is real: CopyBits (all four transfer modes), rect/oval/line
-  verbs with pen patterns and modes, and bitmap text draw into the screen
-  buffer exactly as the original code directs.  The hot loops (CBLIT /
+  verbs with pen patterns and modes, DrawPicture, and text draw into the
+  screen buffer exactly as the original code directs.
+- Text uses the Mac's own bitmap fonts — Chicago 12 (the system font the
+  game draws in), Geneva and Monaco — with their real proportional widths
+  (`STRINGWIDTH` centering comes out right), bold and outline styles, and
+  larger sizes scaled from the strike as QuickDraw does (the 24-point
+  logo, the 96-point BOOM).
+- Each adventure gets its own walls and floors: `new.interior` draws PICT
+  101–108 from the application's resource fork (and PICT 110, the ChipWit
+  portrait, greets you at startup).  `tools/macdisk.py` reads the HFS disk
+  image directly; `tools/extract_resources.py` decodes the PICTs.
+- Sound: `TONE ( ticks volume freq×10 )` notes queue like the Mac sound
+  driver's and play in the browser as square waves; `?SOUND` tracks the
+  queue against a real clock (a `CMSEC` C primitive), so the game's
+  `begin ?sound not until` waits take the time they did on a Mac.  The hot loops (CBLIT /
   CFILLPAT) are C primitives compiled into pforth via `pfcustom.c` —
   full startup takes ~0.1 s; `live.fs` paces the game at ~60 events/s.
 - Events are pumped MacForth-style: `STILL.DOWN` and `@MOUSE` consume the
@@ -74,22 +93,25 @@ in 8 orientations with masks, and both full sprite sheets — 1× pixels,
 transparent background, named from the original rect tables.  See
 [`assets/README.md`](assets/README.md) for the naming map and license.
 
-**Not yet done:** PICT decoding for per-adventure floor tiles
-(`new.interior` — the sprite sheet's baked-in tiles are used meanwhile),
-proportional Mac font metrics (text is an 8×8 font, so wide strings run a
-little long), sound, and websocket push instead of frame polling.
+**Not yet done:** italic/underline/shadow text styles (the game only
+uses bold and outline), and the old chord sounds (`APLAY`), which the
+final source itself disables.
 
 ## Layout
 
 - `macforth-shim.fs` — MacForth/Toolbox compatibility layer for pforth
-- `qd.fs` — the renderer: 1-bit bitmaps, patterns, CopyBits, 8×8 bitmap text
-- `pfcustom.c` — C blitter primitives (CBLIT/CFILLPAT), built into pforth
-- `font8x8.fs` — public-domain 8×8 font (Marcel Sondaar / Daniel Hepper)
+- `qd.fs` — the renderer: 1-bit bitmaps, patterns, CopyBits, PICTs, Mac fonts
+- `pfcustom.c` — C primitives built into pforth: the blitters
+  (CBLIT/CFILLPAT) and a millisecond clock (CMSEC)
 - `loader.fs` — replaces SCREEN 001 (the Robotnik loader); compiles the game
 - `setup.sh`, `play.sh`, `run-test.sh` — build, play, smoke-test
 - `live.fs`, `serve.py` — the playable browser bridge (`live/` holds the
-  framebuffer and input queue at runtime)
+  framebuffer, input queue and note queue at runtime)
 - `split_screens.py` — splits `ChipWits.forth` into `screens/NNN.fs`
+- `tools/macdisk.py` — stdlib reader: DiskCopy 4.2 image → HFS → forks →
+  resources (`python3 tools/macdisk.py IMAGE [FILE]` lists them)
+- `tools/extract_resources.py` — PICTs and FONTs → `data/pict-*.bin`,
+  `data/font-*.bin` (formats documented in the script)
 - `tools/extract_assets.py`, `assets/` — the reusable art (see above)
 - `test-vm.fs` — headless VM smoke test
 - `test-render.fs` — full startup + gameplay, saving PBM screenshots
@@ -115,8 +137,17 @@ little long), sound, and websocket push instead of frame polling.
 - A Rect is 4×int16 `t,l,b,r`; a Point is the 32-bit fetch of `t,l`
   (x = high 16 bits, y = low 16 bits on a little-endian host).
 - A-traps are defined in screen 076 via `mt`/`w>mt`/`2w>mt`/`func>l`; the shim
-  dispatches on trap number (OffsetRect and CopyBits are implemented for
-  real; CopyBits hands off to `qd.fs`).
+  dispatches on trap number (OffsetRect, CopyBits and DrawPicture are
+  implemented for real; the latter two hand off to `qd.fs`).
+- `>RECT` as `PICT.IN.RECT` uses it is `( x1 y1 x2 y2 -- x1 y1 rect )`:
+  the word ends with a `2DROP` that only balances if the first corner
+  stays behind.  (Its `(DRAW.PICTURE) (draw.picture)` draws twice —
+  case-insensitive lookup makes them the same word.)
+- `TONE ( duration volume freq -- )`: duration in ticks, volume 0–255,
+  frequency in tenths of a hertz (`SING`'s `scale(` table: 5233 = 523.3 Hz).
+- The recovered `ChipWits` application file in `mac/disks/*/` is an empty
+  data fork: its PICTs, like the System file's fonts, exist only in the
+  resource forks inside the `.dc42` disk images.
 - Screen 016 redefines `WITHIN` and `MOD` (always-positive) — load order handles it.
 - File channels: 4 = stats (in `"CW"`), 5 = `IBOL`, 6 = `CW` robots,
   8 = mission file, 7 = ad-hoc. `READ.FIXED ( addr rec# f# )` uses

@@ -8,6 +8,7 @@ PORT="${1:-8047}"
 mkdir -p live
 : > live/input.bin
 : > live/frame.raw
+: > live/sound.bin
 
 python3 serve.py "$PORT" &
 SERVER=$!

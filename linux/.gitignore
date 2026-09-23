@@ -4,3 +4,4 @@ screens/
 data/
 *.pbm
 live/
+__pycache__/

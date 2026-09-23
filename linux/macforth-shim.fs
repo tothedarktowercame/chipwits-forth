@@ -105,7 +105,11 @@ first-buf constant first
    dup 16 rshift dup 32767 > if 65536 - then
    swap 65535 and dup 32767 > if 65536 - then ;
 : xy>point ( x y -- p ) 65535 and swap 65535 and 16 lshift or ;
-: >rect ( x y -- p ) xy>point ;   \ used by PICT.IN.RECT (screen 190)
+create pict-rect 8 allot
+: >rect { x1 y1 x2 y2 -- x1 y1 rect }   \ PICT.IN.RECT (screen 190) only
+   \ builds the destination rect but leaves x1 y1: the caller's closing
+   \ 2DROP expects them (its stack only balances that way)
+   x1 y1  y1 x1 y2 x2 pict-rect !rect  pict-rect ;
 \ MAKE.RECT builds a rect VALUE from two corners (used as: make.rect drop , ,)
 : make.rect { x1 y1 x2 y2 -- pbr ptl flag }
    x2 y2 xy>point  x1 y1 xy>point  0 ;
@@ -165,7 +169,7 @@ include qd.fs
    case
      43244 of (copybits) endof                      \ A8EC CopyBits (real)
      43125 of cur-bmap ! endof                      \ A875 SetPortBits (real)
-     43254 of 2drop endof                           \ A8F6 DrawPicture (stub)
+     43254 of (drawpicture) endof                   \ A8F6 DrawPicture (real)
      43131 of drop endof                            \ A87B ClipRect
      43225 of drop endof                            \ A8D9 DisposeRgn
      43427 of drop endof                            \ A9A3 ReleaseResource
@@ -182,8 +186,6 @@ include qd.fs
 : set.cursor ( c -- ) drop ;
 0 constant ibeam
 0 constant plain   8 constant outline
-: textfont  ( n -- ) drop ;
-: textstyle ( n -- ) drop ;
 : scroll ( rect dx dy rgn -- ) 2drop 2drop ;
 : global>local ( p -- p ) ;
 variable xoff-v variable yoff-v variable xpiv-v variable ypiv-v
@@ -258,11 +260,26 @@ variable ctl-counter
 : binary.control ( w x y title$ value kind -- ctl )
    2drop drop 2drop drop  1 ctl-counter +!  ctl-counter @ ;
 
-\ ==================== sound (stubs) ====================
-: tone ( amp dur pitch -- ) drop 2drop ;
-: aplay ( chord -- ) drop ;
-: ?sound ( -- f ) 0 ;
-: hush ( -- ) ;
+\ ==================== sound ====================
+\ TONE ( duration volume freq*10 -- ): one square-wave note, duration in
+\ ticks (1/60 s), volume 0-255, frequency in tenths of Hz (screen 057's
+\ scale( table: 5233 = C5, 523.3 Hz).  Notes queue
+\ behind each other like the Mac sound driver's; ?SOUND is true while the
+\ queue is still playing, so the game's  begin ?sound not until  waits
+\ for real time.  A note that would start more than half a second late is
+\ dropped rather than letting the queue lag the game.
+\ 'tone-hook ( dur vol f10 -- ) delivers each note (live.fs: the browser).
+variable snd-busy   \ cmsec at which the queue drains
+variable 'tone-hook
+: ?sound ( -- f ) snd-busy @ cmsec - 0> ;
+: tone { dur vol f10 | now -- }
+   cmsec -> now
+   snd-busy @ now - 0< if now snd-busy ! then
+   snd-busy @ now - 500 > if exit then
+   dur 1000 * 60 / snd-busy +!
+   'tone-hook @ ?dup if >r dur vol f10 r> execute then ;
+: aplay ( chord -- ) drop ;   \ old chord sounds: disabled in the source
+: hush ( -- ) cmsec snd-busy ! ;
 
 \ ==================== files (real, backed by recovered CW+ data files) ====================
 \ MacForth file channels 0..15; data files live in data/
@@ -312,8 +329,18 @@ variable cur-fd
      a f# flen @ cur-fd @ write-file drop
    then ;
 : set.rec.len ( len f# -- ) flen ! ;
-create fake-pict 16 allot
-: get.picture ( pict# -- h ) drop fake-pict ;  \ PICT decoding: later
+\ PICT resources: tools/extract_resources.py renders each one to
+\ data/pict-NNN.bin (t l b r rowBytes 0 as int16, then 1-bit rows).
+\ A handle is a 2-cell record [ptr][size]; loaded once, kept for good.
+create pict-handles 16 2* cells allot   \ ids 100..115
+: get.picture { id | h fid len -- h }
+   id 100 - 15 u> if 0 exit then
+   pict-handles id 100 - 2* cells + -> h
+   h @ if h exit then
+   id s" pict-" data-path r/o open-file if drop 0 exit then -> fid
+   fid file-size 2drop -> len
+   len allocate drop h !  len h cell+ !
+   h @ len fid read-file 2drop  fid close-file drop  h ;
 : ?file.error ( -- ) ;
 variable 'close-hook
 : close.all ( -- ) 16 0 do i close loop
@@ -329,7 +356,7 @@ variable heap-handle-slot
 : lock.handle ( h -- ) drop ;
 : non.purgable ( h -- ) drop ;
 : mask.handle ( a -- a ) ;
-: handle.size ( h -- n ) drop 0 ;
+: handle.size ( h -- n ) cell+ @ ;   \ only PICT handles are asked
 : resize.object ( n -- ) drop ;
 : resize.vocab ( n -- ) drop ;
 : minimum.vocab ( n -- ) drop ;

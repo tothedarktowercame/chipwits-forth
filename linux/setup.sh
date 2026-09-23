@@ -28,4 +28,8 @@ for f in "CW" "Greedville" "IBOL" "Source Graphics" "Doom Rooms" \
     cp "$SRC/$f" data/
 done
 
+# 4. Resources that survive only inside the disk image's resource forks:
+#    the adventures' wall/floor PICTs and the system fonts.
+python3 tools/extract_resources.py
+
 echo "setup complete -- try: ./run-test.sh (smoke test) or ./play.sh (the game)"
