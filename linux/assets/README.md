@@ -4,7 +4,7 @@ Reusable PNGs sliced from the recovered ChipWits+ data files (`../data/`,
 originally `mac/disks/CW+ Copy 1`). Rectangles are transcribed from the
 original source tables, so the names are authoritative:
 
-- `ibol/op-*.png` — the 25 IBOL **operator** chips (Action.s.rect(,
+- `ibol/op-*.png` — the 24 IBOL **operator** chips (Action.s.rect(,
   `screens/090.fs`): go, goto, subpanel, boomerang, wire, move, pickup,
   qray, sing, feel-for, look-for, smell-for, flip-coin, keypress,
   num-equal, num-less, obj-equal, move-equal, on-number, on-object,

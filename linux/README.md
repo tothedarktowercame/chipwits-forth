@@ -13,19 +13,36 @@ drawn by the original game code through a QuickDraw-subset renderer
 sprite sheets, Doug Sharp's saved robot, and his last-played mission
 (Memory Lanes) restored from the recovered stats file.*
 
+## Quick start
+
+Needs `gcc-multilib` (for the 32-bit pforth build), `python3`, `git`, and
+ImageMagick only if you regenerate the art.
+
+    ./setup.sh      # once: builds 32-bit pforth, generates screens/ from
+                    # ../mac/forth, copies the data files
+    ./play.sh       # the game: Forth runs in this terminal,
+                    # UI at http://localhost:8047 (./play.sh PORT to change)
+    ./run-test.sh   # headless VM smoke test: a wall-following robot
+
+In the browser, pick **Games > Start / End Mission**.  `serve.py` listens
+on all interfaces with no authentication; on a shared machine, firewall
+the port or reach it through an SSH tunnel (`ssh -L 8047:localhost:8047`).
+
+`run-test.sh` should show the robot feel a wall, turn, walk across the
+room square by square and exit through a door, with fuel/cycle/damage
+counts matching the original game's tables (MOVE = 3 cycles / 5 fuel,
+bump = 50 damage).
+
 ## Status
 
-**Playable in the browser:**
-
-    ./setup.sh   # once
-    ./play.sh    # game in the terminal, UI at http://localhost:8047
-
-The original master word (`CHIPWITS`) runs the whole show: start missions
-from the Games menu, watch the robot run with the live debug trace, open
-the Workshop and edit chips with the mouse (`docs/native-linux-workshop.png`
-shows Doug Sharp's saved robot program rendered as its wired chip network).
-Options > Quit exits cleanly.  The browser page polls the 1-bit framebuffer
-(~11 fps) and posts mouse/key/menu events back; `serve.py` is stdlib-only.
+**Playable in the browser.**  The original master word (`CHIPWITS`) runs
+the whole show: start missions from the Games menu, watch the robot run
+with the live debug trace, open the Workshop and edit chips with the mouse
+([`docs/native-linux-workshop.png`](docs/native-linux-workshop.png) shows
+Doug Sharp's saved robot program rendered as its wired chip network).
+Options > Quit exits cleanly.  The browser page polls the 1-bit
+framebuffer (~11 fps) and posts mouse/key/menu events back; `serve.py` is
+stdlib-only.
 
 - Rendering is real: CopyBits (all four transfer modes), rect/oval/line
   verbs with pen patterns and modes, and bitmap text draw into the screen
@@ -38,11 +55,8 @@ Options > Quit exits cleanly.  The browser page polls the 1-bit framebuffer
 - Menu picks dispatch through `MENU.SELECTION:` handlers in the original
   code (`menu-item`/`menu-mode` + calling the menu word).
 
-**Extracted art** (`assets/`, regenerate with `tools/extract_assets.py`):
-all 25 operator chips + 29 argument chips from the IBOL sheet, the robot
-in 8 orientations with masks, and both full sprite sheets — 1× pixels,
-transparent background, named from the original rect tables.  See
-`assets/README.md` for the naming map and license.
+**The source and data, faithfully:**
+
 - All 184 recovered source screens of `CW+ Work Final Src/ChipWits.forth`
   compile under pforth (32-bit build), with 3 damaged screens filled in from
   `CW Game + Backup Source`.
@@ -54,20 +68,16 @@ transparent background, named from the original rect tables.  See
   (`Source Graphics`, 368×232×1-bit) and chip icons (`IBOL`, 160×160×1-bit) —
   their sizes match the code's `source.len`/`ibol.len` constants exactly.
 
+**Extracted art** (`assets/`, regenerate with `tools/extract_assets.py`):
+all 24 operator chips + 29 argument chips from the IBOL sheet, the robot
+in 8 orientations with masks, and both full sprite sheets — 1× pixels,
+transparent background, named from the original rect tables.  See
+[`assets/README.md`](assets/README.md) for the naming map and license.
+
 **Not yet done:** PICT decoding for per-adventure floor tiles
 (`new.interior` — the sprite sheet's baked-in tiles are used meanwhile),
 proportional Mac font metrics (text is an 8×8 font, so wide strings run a
 little long), sound, and websocket push instead of frame polling.
-
-## Quick start
-
-    ./setup.sh      # builds 32-bit pforth (needs gcc-multilib), generates
-                    # screens/ from ../mac/forth, copies data files
-    ./run-test.sh   # headless VM smoke test: a wall-following robot
-
-Expected output: the robot feels a wall, turns, walks across the room square
-by square and exits through a door, with fuel/cycle/damage counts matching the
-original game's tables (MOVE = 3 cycles / 5 fuel, bump = 50 damage).
 
 ## Layout
 
@@ -76,11 +86,14 @@ original game's tables (MOVE = 3 cycles / 5 fuel, bump = 50 damage).
 - `pfcustom.c` — C blitter primitives (CBLIT/CFILLPAT), built into pforth
 - `font8x8.fs` — public-domain 8×8 font (Marcel Sondaar / Daniel Hepper)
 - `loader.fs` — replaces SCREEN 001 (the Robotnik loader); compiles the game
-- `live.fs`, `serve.py`, `play.sh` — the playable browser bridge
+- `setup.sh`, `play.sh`, `run-test.sh` — build, play, smoke-test
+- `live.fs`, `serve.py` — the playable browser bridge (`live/` holds the
+  framebuffer and input queue at runtime)
 - `split_screens.py` — splits `ChipWits.forth` into `screens/NNN.fs`
 - `tools/extract_assets.py`, `assets/` — the reusable art (see above)
 - `test-vm.fs` — headless VM smoke test
 - `test-render.fs` — full startup + gameplay, saving PBM screenshots
+- `docs/` — the screenshots used in this README
 - `screens/`, `data/`, `pforth/`, `live/` — generated (gitignored)
 
 ## MacForth dialect notes (hard-won)
@@ -102,8 +115,8 @@ original game's tables (MOVE = 3 cycles / 5 fuel, bump = 50 damage).
 - A Rect is 4×int16 `t,l,b,r`; a Point is the 32-bit fetch of `t,l`
   (x = high 16 bits, y = low 16 bits on a little-endian host).
 - A-traps are defined in screen 076 via `mt`/`w>mt`/`2w>mt`/`func>l`; the shim
-  dispatches on trap number (OffsetRect is implemented for real, CopyBits is
-  arity-faithful and awaits the rendering pass).
+  dispatches on trap number (OffsetRect and CopyBits are implemented for
+  real; CopyBits hands off to `qd.fs`).
 - Screen 016 redefines `WITHIN` and `MOD` (always-positive) — load order handles it.
 - File channels: 4 = stats (in `"CW"`), 5 = `IBOL`, 6 = `CW` robots,
   8 = mission file, 7 = ad-hoc. `READ.FIXED ( addr rec# f# )` uses

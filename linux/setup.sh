@@ -28,4 +28,4 @@ for f in "CW" "Greedville" "IBOL" "Source Graphics" "Doom Rooms" \
     cp "$SRC/$f" data/
 done
 
-echo "setup complete -- try: ./run-test.sh"
+echo "setup complete -- try: ./run-test.sh (smoke test) or ./play.sh (the game)"
