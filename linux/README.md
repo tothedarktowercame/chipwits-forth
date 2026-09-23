@@ -28,9 +28,11 @@ ImageMagick only if you regenerate the art.
 
 In the browser, pick **Games > Start / End Mission**.  Sound starts with
 your first click or key (browsers keep pages silent until then);
-Options > Sound On/Off is the game's own toggle.  `serve.py` listens
-on all interfaces with no authentication; on a shared machine, firewall
-the port or reach it through an SSH tunnel (`ssh -L 8047:localhost:8047`).
+Options > Sound On/Off is the game's own toggle.  `serve.py` has no
+authentication, so it listens on loopback only: reach it from another
+machine through an SSH tunnel (`ssh -L 8047:localhost:8047`) or a reverse
+proxy with auth (it works under a path prefix, websocket included), or
+set `CHIPWITS_BIND=0.0.0.0` on a trusted network.
 
 `run-test.sh` should show the robot feel a wall, turn, walk across the
 room square by square and exit through a door, with fuel/cycle/damage

@@ -306,7 +306,10 @@ class H(http.server.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     os.makedirs(LIVE, exist_ok=True)
-    srv = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), H)
+    # loopback by default: the page has no auth of its own.  Put a proxy
+    # with auth in front, tunnel with ssh -L, or CHIPWITS_BIND=0.0.0.0.
+    bind = os.environ.get("CHIPWITS_BIND", "127.0.0.1")
+    srv = http.server.ThreadingHTTPServer((bind, PORT), H)
     srv.daemon_threads = True
     print(f"ChipWits front-end on http://localhost:{PORT}")
     srv.serve_forever()
