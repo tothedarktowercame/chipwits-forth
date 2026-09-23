@@ -25,15 +25,44 @@ variable gfx-text  \ 0 = type/emit go to console only (test harness reports)
 : backpat ( pat -- ) back-pat ! ;
 : textsize ( n -- ) text-size ! ;
 : textmode ( m -- ) text-mode ! ;
+\ MacForth's turtle frame: XYOFFSET ( x y -- ) moves the origin and
+\ XYPIVOT ( angle -- ) rotates the axes by whole degrees; MOVE.TO and
+\ DRAW.TO coordinates are taken in that frame, RMOVE/RDRAW deltas are
+\ rotated.  The pen itself (@PEN) stays in port coordinates -- the hand
+\ drawing (screen 055) relies on that: @pen xyoffset re-roots the frame
+\ at the arm's tip.  GINIT resets the frame.
+variable xoff-v  variable yoff-v  variable piv-v
+1 constant piv-dir   \ clockwise on screen (y down): checked by drawing the
+                      \ pickup arm in all 8 orientations -- it reaches the facing square
+: xyoffset ( x y -- ) yoff-v ! xoff-v ! ;
+: xypivot ( angle -- ) piv-v ! ;
+: get.xyoffset ( -- x y ) xoff-v @ yoff-v @ ;
+: get.xypivot ( -- angle ) piv-v @ ;
+: rot-xy { x y | c s -- x' y' }
+   piv-v @ 0= if x y exit then
+   piv-v @ piv-dir * sin -> s   piv-v @ piv-dir * 90 + sin -> c
+   x c * y s * - 10000 /   x s * y c * + 10000 / ;
+: >port ( x y -- px py ) rot-xy yoff-v @ + swap xoff-v @ + swap ;
 : @pen ( -- x y ) pen-x @ pen-y @ ;
-: move.to ( x y -- ) pen-y ! pen-x ! ;
-: rmove ( dx dy -- ) pen-y +! pen-x +! ;
-: ginit 1 1 pensize 8 penmode black penpat white backpat ;
+: move.to ( x y -- ) >port pen-y ! pen-x ! ;
+: rmove ( dx dy -- ) rot-xy pen-y +! pen-x +! ;
+: ginit 1 1 pensize 8 penmode black penpat white backpat
+   0 0 xyoffset 0 xypivot ;
 ginit  1 text-mode !  12 text-size !  +gfx
 
 \ ---------- pixel core (bitmap-local coords = global - bounds origin) ----------
+\ ClipRect (A87B): the game fences the board with it around each robot
+\ frame (anim>screen.copy, screen 039) and resets it to the full screen
+\ right after.  Every drawing path below honours it: half-open t l b r.
+variable clip-t  variable clip-l  variable clip-b  variable clip-r
+: (cliprect) ( rect -- ) @rect clip-r ! clip-b ! clip-l ! clip-t ! ;
+0 clip-t !  0 clip-l !  342 clip-b !  512 clip-r !
+: clipped? ( x y -- f )
+   dup clip-t @ < swap clip-b @ < not or
+   swap dup clip-l @ < swap clip-r @ < not or or ;
 : px! { v x y bm | lx ly a m -- }
    bm 0= if exit then
+   x y clipped? if exit then
    x bm bm-l - -> lx   y bm bm-t - -> ly
    lx 0< ly 0< or if exit then
    lx bm bm-r bm bm-l - < not if exit then
@@ -67,6 +96,9 @@ ginit  1 text-mode !  12 text-size !  +gfx
 create fp( 12 cells allot
 : (fill) { xa ya xb yb pat mode bm -- }
    bm 0= if exit then
+   xa clip-l @ max -> xa  ya clip-t @ max -> ya
+   xb clip-r @ min -> xb  yb clip-b @ min -> yb
+   xb xa > not yb ya > not or if exit then
    bm bm-base fp( !          bm bm-rb fp( 4 + !
    bm bm-l fp( 8 + !         bm bm-t fp( 12 + !
    bm bm-r bm bm-l - fp( 16 + !   bm bm-b bm bm-t - fp( 20 + !
@@ -77,6 +109,12 @@ create fp( 12 cells allot
 \ ---------- rect / oval / line verbs ----------
 : minmax ( a b -- min max ) 2dup > if swap then ;
 
+\ MacForth's PATTERN ( pat -- verb ): "fill with this pattern" as a shape
+\ verb, alongside FRAME PAINT CLEAR INVERT.  Back.wipe paints the gray
+\ desktop with it and Pseudo.window wipes each window's interior.
+variable fill-pat
+4 constant (pattern-verb)
+: pattern ( pat -- verb ) fill-pat ! (pattern-verb) ;
 : rectangle { x1 y1 x2 y2 mode | xa ya xb yb -- }
    x1 x2 minmax -> xb -> xa
    y1 y2 minmax -> yb -> ya
@@ -90,6 +128,7 @@ create fp( 12 cells allot
      1 of xa ya xb yb pen-pat @ pen-mode @ cur-bmap @ (fill) endof
      2 of xa ya xb yb back-pat @ 8 cur-bmap @ (fill) endof
      3 of xa ya xb yb black 10 cur-bmap @ (fill) endof
+     4 of xa ya xb yb fill-pat @ 8 cur-bmap @ (fill) endof
    endcase ;
 
 : rrectangle { x1 y1 x2 y2 ow oh mode -- } x1 y1 x2 y2 mode rectangle ;
@@ -110,6 +149,7 @@ create fp( 12 cells allot
          1 of i j pen-pat @ pat-bit i j cur-bmap @ pen-mode @ blit-px endof
          2 of i j back-pat @ pat-bit i j cur-bmap @ 8 blit-px endof
          3 of 1 i j cur-bmap @ 10 blit-px endof
+         4 of i j fill-pat @ pat-bit i j cur-bmap @ 8 blit-px endof
        endcase
      then
    loop loop ;
@@ -127,19 +167,27 @@ create fp( 12 cells allot
      err 2* dup dy < not if dy err + -> err x1 sx + -> x1 then
      dx < if dx err + -> err y1 sy + -> y1 then
    again ;
-: draw.to ( x y -- ) 2dup @pen 2swap vector move.to ;
-: rdraw ( dx dy -- ) swap pen-x @ + swap pen-y @ + draw.to ;
+: (draw.to) ( px py -- ) 2dup @pen 2swap vector pen-y ! pen-x ! ;
+: draw.to ( x y -- ) >port (draw.to) ;
+: rdraw ( dx dy -- ) rot-xy swap pen-x @ + swap pen-y @ + (draw.to) ;
 
 \ ---------- CopyBits: equal-size blit, rects in each bitmap's bounds space ----------
 \ C core (CBLIT); rect coords are translated to bitmap-local before the call.
 create cb( 15 cells allot
-: (copybits) { src dst sr dr mode rgn -- }
+: (copybits) { src dst sr dr mode rgn | dl dt w h cl ct -- }
    src 0= dst 0= or if exit then
+   dr 2+ w@ -> dl   dr w@ -> dt
+   sr 6 + w@ sr 2+ w@ - -> w   sr 4 + w@ sr w@ - -> h
+   \ clip the destination to the ClipRect; the source moves with it
+   dl clip-l @ max -> cl   dt clip-t @ max -> ct
+   dl w + clip-r @ min cl - -> w   dt h + clip-b @ min ct - -> h
+   w 1 < h 1 < or if exit then
    src bm-base cb( !          src bm-rb cb( 4 + !
-   sr 2+ w@ src bm-l - cb( 8 + !    sr w@ src bm-t - cb( 12 + !
+   sr 2+ w@ src bm-l - cl dl - + cb( 8 + !
+   sr w@ src bm-t - ct dt - + cb( 12 + !
    dst bm-base cb( 16 + !     dst bm-rb cb( 20 + !
-   dr 2+ w@ dst bm-l - cb( 24 + !   dr w@ dst bm-t - cb( 28 + !
-   sr 6 + w@ sr 2+ w@ - cb( 32 + !  sr 4 + w@ sr w@ - cb( 36 + !
+   cl dst bm-l - cb( 24 + !   ct dst bm-t - cb( 28 + !
+   w cb( 32 + !  h cb( 36 + !
    mode cb( 40 + !
    src bm-r src bm-l - cb( 44 + !   src bm-b src bm-t - cb( 48 + !
    dst bm-r dst bm-l - cb( 52 + !   dst bm-b dst bm-t - cb( 56 + !

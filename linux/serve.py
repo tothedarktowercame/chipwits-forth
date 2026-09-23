@@ -5,6 +5,7 @@ GET  /       the page: canvas + menu bar
 GET  /ws     websocket: the server pushes binary messages --
                0x01 + 21888 bytes   a new 512x342 1-bit frame
                0x02 + n*8 bytes     notes (duration volume freq*10 pad, u16 LE)
+               0x03 + JSON          the 16 robot names (Warehouse menu)
              and the page sends text "type x y" events
 GET  /frame  the framebuffer (polling fallback when websockets are blocked)
 POST /input  "type x y" (polling fallback)
@@ -13,18 +14,20 @@ Events go to live/input.bin as 4x uint16 LE; frames come from
 live/frame.raw, notes from live/sound.bin (both written by live.fs).
 Run via play.sh; stdlib only.
 """
-import base64, hashlib, http.server, os, socket, struct, sys, threading, time
+import base64, hashlib, http.server, json, os, socket, struct, sys, threading, time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 LIVE = os.path.join(ROOT, "live")
 FRAME = os.path.join(LIVE, "frame.raw")
 INPUT = os.path.join(LIVE, "input.bin")
 SOUND = os.path.join(LIVE, "sound.bin")
+ROBOTS = os.path.join(ROOT, "data", "CW")
 FRAME_LEN = 21888
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8047
 
 INDEX = """<!DOCTYPE html>
 <meta charset="utf-8"><title>ChipWits</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
  body { background:#333; color:#ddd; font:14px monospace; margin:12px; }
  #bar button { font:13px monospace; margin:1px; }
@@ -33,16 +36,44 @@ INDEX = """<!DOCTYPE html>
  details[open] { background:#444; }
  details div { position:absolute; background:#444; padding:4px; z-index:2; }
  details div button { display:block; width:100%; text-align:left; }
- canvas { image-rendering:pixelated; width:1024px; height:684px;
-          background:#fff; display:block; margin-top:8px; }
+ canvas { image-rendering:pixelated; width:100%; max-width:1024px; height:auto;
+          aspect-ratio:512/342; background:#fff; display:block; margin-top:8px;
+          touch-action:none; }
  #status { margin-top:6px; color:#8c8; }
+ #help { margin-top:10px; max-width:1024px; line-height:1.45; }
+ #help summary { display:inline-block; }
+ #help div { position:static; background:none; padding:6px 2px; }
+ #help b { color:#fff; }
 </style>
 <div id="bar"></div>
 <canvas id="c" width="512" height="342" tabindex="0"></canvas>
 <div id="status">connecting...</div>
+<details id="help" open><summary>How to play</summary><div>
+<p>ChipWits is a programming game: you don't steer the robot, you
+<b>program</b> it, then watch it run a mission on its own.</p>
+<p><b>Watch first.</b> Games &gt; pick an adventure (Greedville is the
+easiest), then Games &gt; Start / End Mission.  The robot runs the program
+shown in the Debug window, scoring by eating food and collecting things
+until it runs out of fuel or cycles, or takes too much damage.  Options &gt;
+Debug/Stats swaps the program trace for your robot's statistics.</p>
+<p><b>Pick a robot.</b> The Warehouse menu holds 16 saved ChipWits (Doug
+Sharp's originals are Greedy, Mr. CW and Buddy; the rest are blank slots).</p>
+<p><b>Program it.</b> End any running mission, then Workshop &gt; Enter.  The
+robot's main panel (A) is on the left; letters above it switch to subpanels.
+To burn a chip: click an empty socket, click an <b>operator</b> in the
+Operators window, then, if it needs one, an <b>argument</b> in the Arguments
+window.  Click an output wire, then a new spot, to re-route it.  Drag a
+chip to move it; drag it off the panel to delete it.  The traffic light
+(GO) is where the panel starts.</p>
+<p><b>Save.</b> Workshop &gt; Save ChipWit, type a name, tick the adventures
+it's meant for, then OK (or Return).  Workshop &gt; Enter / Leave goes back
+to the game.</p>
+<p>Sound starts after your first click or key.  Options &gt; Quit ends the
+game process.</p>
+</div></details>
 <script>
 const MENUS = [
- ["Warehouse", 7, Array.from({length:16},(_,i)=>[i+1, "ChipWit "+(i+1)])],
+ ["Warehouse", 7, Array.from({length:16},(_,i)=>[i+1, "ChipWit "+(i+1)])],   // renamed live
  ["Workshop", 6, [[1,"Enter / Leave"],[3,"Save ChipWit"],[5,"Cut Panel"],
                   [6,"Copy Panel"],[7,"Paste Panel"],[8,"Clear Panel"]]],
  ["Games", 8, [[1,"Start / End Mission"],[2,"Series"],
@@ -59,6 +90,7 @@ for (const [name, num, items] of MENUS) {
     const b = document.createElement("button");
     b.textContent = label;
     b.onclick = () => { wakeAudio(); send(5, num, item); d.open = false; };
+    if (num === 7) b.id = "wh" + item;
     box.appendChild(b);
   }
   d.appendChild(box); bar.appendChild(d);
@@ -123,6 +155,12 @@ function connect() {
     const m = new Uint8Array(e.data);
     if (m[0] === 1 && m.length === 21889) show(m.subarray(1));
     else if (m[0] === 2) play(m.subarray(1));
+    else if (m[0] === 3) {                  // robot names from the saved-robots file
+      JSON.parse(new TextDecoder().decode(m.subarray(1))).forEach((n, i) => {
+        const b = document.getElementById("wh" + (i + 1));
+        if (b) b.textContent = (i + 1) + "  " + (n || "(empty)");
+      });
+    }
   };
   ws.onclose = () => {
     ws = null;
@@ -147,9 +185,13 @@ function coords(e) {
            (e.clientY - r.top) * 342 / r.height ];
 }
 let lastMove = 0;
-cv.addEventListener("mousedown", e => { cv.focus(); wakeAudio(); send(1, ...coords(e)); });
-cv.addEventListener("mouseup",   e => send(2, ...coords(e)));
-cv.addEventListener("mousemove", e => {
+// pointer events: mouse, pen and touch alike (a finger can drag chips)
+cv.addEventListener("pointerdown", e => {
+  e.preventDefault(); cv.focus(); wakeAudio();
+  cv.setPointerCapture(e.pointerId); send(1, ...coords(e));
+});
+cv.addEventListener("pointerup",   e => send(2, ...coords(e)));
+cv.addEventListener("pointermove", e => {
   const now = Date.now();
   if (now - lastMove > 40) { lastMove = now; send(3, ...coords(e)); }
 });
@@ -169,6 +211,21 @@ def post_event(text):
     t, x, y = (int(v) for v in text.split())
     with INPUT_LOCK, open(INPUT, "ab") as f:
         f.write(struct.pack("<HHHH", t & 0xffff, x & 0xffff, y & 0xffff, 0))
+
+def robot_names():
+    """The 16 names from the saved-robots file: stats records of 108 bytes
+    after the 17 program slots (960 bytes each), each starting with a
+    big-endian length and the characters (screens 160-162)."""
+    try:
+        b = open(ROBOTS, "rb").read()
+    except OSError:
+        return None
+    names = []
+    for i in range(16):
+        rec = 960 * 17 + 108 * i
+        n = min(struct.unpack(">H", b[rec:rec + 2])[0], 18)
+        names.append(b[rec + 2:rec + 2 + n].decode("mac_roman", "replace"))
+    return names
 
 def read_frame():
     try:
@@ -276,7 +333,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
         # game -> page: a frame whenever it changes, notes as they are queued
         # (only new ones: a page that connects late hears nothing stale)
-        last = None
+        last, names = None, None
         try:
             snd_off = os.path.getsize(SOUND)
         except OSError:
@@ -295,6 +352,10 @@ class H(http.server.BaseHTTPRequestHandler):
                         notes = f.read((size - snd_off) // 8 * 8)
                     snd_off += len(notes)
                     send(b"\x02" + notes)
+                n = robot_names()
+                if n is not None and n != names:
+                    names = n
+                    send(b"\x03" + json.dumps(n).encode())
                 frame = read_frame()
                 if frame is not None and frame != last:
                     last = frame

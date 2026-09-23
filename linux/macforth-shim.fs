@@ -1,7 +1,8 @@
 \ macforth-shim.fs -- MacForth (Mac 128K) compatibility layer for pforth (32-bit build)
 \ Lets the original 1986 ChipWits+ source compile & run on Linux.
-\ Rendering is real (see qd.fs): 1-bit bitmaps, patterns, CopyBits, bitmap text.
-\ Menus/controls/TextEdit/sound remain arity-faithful stubs.
+\ Rendering is real (see qd.fs): 1-bit bitmaps, patterns, CopyBits, PICTs,
+\ Mac fonts, ClipRect.  Controls, TextEdit and sound are real too; the menu
+\ bar is the browser page's (menu picks dispatch into MENU.SELECTION: handlers).
 
 decimal
 
@@ -131,7 +132,6 @@ variable pt-x  variable pt-y
 create white 0 , 0 ,
 create black -1 , -1 ,
 create gray  hex AA55AA55 , 55AA55AA , decimal
-: pattern ( ? -- ) ;   \ revisit on use
 
 \ ==================== screen / windows ====================
 \ Classic Mac: 512x342 1-bit screen; every window's portBits points at it.
@@ -170,7 +170,7 @@ include qd.fs
      43244 of (copybits) endof                      \ A8EC CopyBits (real)
      43125 of cur-bmap ! endof                      \ A875 SetPortBits (real)
      43254 of (drawpicture) endof                   \ A8F6 DrawPicture (real)
-     43131 of drop endof                            \ A87B ClipRect
+     43131 of (cliprect) endof                      \ A87B ClipRect (real)
      43225 of drop endof                            \ A8D9 DisposeRgn
      43427 of drop endof                            \ A9A3 ReleaseResource
      dup . ." <- unknown A-trap, stack may drift" cr
@@ -188,11 +188,7 @@ include qd.fs
 0 constant plain   8 constant outline
 : scroll ( rect dx dy rgn -- ) 2drop 2drop ;
 : global>local ( p -- p ) ;
-variable xoff-v variable yoff-v variable xpiv-v variable ypiv-v
-: xyoffset ( x y -- ) yoff-v ! xoff-v ! ;
-: xypivot  ( x y -- ) ypiv-v ! xpiv-v ! ;
-: get.xyoffset ( -- x y ) xoff-v @ yoff-v @ ;
-: get.xypivot  ( -- x y ) xpiv-v @ ypiv-v @ ;
+\ XYOFFSET/XYPIVOT live in qd.fs with the pen (they transform MOVE.TO/DRAW.TO)
 
 \ ==================== menus (stubs) ====================
 : new.menu ( flags title$ menu# -- ) drop 2drop ;
@@ -239,26 +235,101 @@ create te-hText te-text ,
 create te-rec 512 allot
 te-rec 512 erase
 te-hText te-rec 62 + !
-: tenew ( r1 r2 -- h ) 2drop te-rec ;
+\ The TE view rect comes from TENEW; the game sets the record's font (+74),
+\ size (+80) and ascent (+26) itself (screen 171).  Names are short, so
+\ the whole field is redrawn on each change, caret at the end.
+variable te-view  variable te-active
+: te-len ( -- a ) te-rec 60 + ;
+: tenew ( r1 r2 -- h ) te-view ! drop te-rec ;
 : terecord ( w -- te ) drop te-rec ;
-: teactivate ( -- ) ;  : tedeactivate ( -- ) ;
+variable sv-font variable sv-size variable sv-face variable sv-mode
+variable sv-x variable sv-y
+: save-text  text-font @ sv-font !  text-size @ sv-size !  text-face @ sv-face !
+   text-mode @ sv-mode !  @pen sv-y ! sv-x ! ;
+: restore-text  sv-font @ text-font !  sv-size @ text-size !  sv-face @ text-face !
+   sv-mode @ text-mode !  sv-x @ sv-y @ pen-y ! pen-x ! ;
+: te-draw { | t l b r -- }
+   te-view @ 0= if exit then
+   te-view @ @rect -> r -> b -> l -> t
+   save-text
+   l t r b white 8 cur-bmap @ (fill)
+   te-rec 74 + w@ text-font !  te-rec 80 + w@ text-size !  0 text-face !
+   1 text-mode !
+   l 4 +  t te-rec 26 + w@ +  pen-y ! pen-x !
+   te-text te-len w@ type
+   te-active @ if pen-x @ t 3 + pen-x @ 1+ b 3 - black 8 cur-bmap @ (fill) then
+   restore-text ;
+: teactivate ( -- ) -1 te-active ! ;
+: tedeactivate ( -- ) 0 te-active ! ;
 : teidle ( -- ) ;
-: tekey ( c -- ) drop ;
+: tekey ( c -- )
+   dup 8 = if drop te-len w@ 1- 0 max te-len w!  te-draw exit then
+   dup 32 < te-len w@ 10 < not or if drop exit then   \ Stuff.name keeps 10
+   te-text te-len w@ + c!  1 te-len w@ + te-len w!  te-draw ;
 : teset.select ( a b -- ) 2drop ;
-: teset.text ( a n -- ) 255 min dup te-rec 60 + w! te-text swap cmove ;
-: teupdate ( r -- ) drop ;
+: teset.text ( a n -- ) 255 min dup te-len w! te-text swap cmove ;
+: teupdate ( r -- ) drop te-draw ;
 : text.click ( -- ) ;
-: get.control ( ctl -- v ) drop -1 ;   \ headless: dialogs resolve instantly
-: set.control ( ctl v -- ) 2drop ;
+
+\ Controls: the name dialog's OK/Cancel pushbuttons (kind 0) and its eight
+\ environment check boxes (kind 1), made by BINARY.CONTROL (screen 167).
+\ A control is a record: x y w h value kind title$.  The game draws the
+\ check boxes' labels itself; a box's hit area takes in its label.
+create ctls 20 7 * cells allot
+variable nctls
+variable this.control
+: c-x ; : c-y cell+ ; : c-w 2 cells + ; : c-h 3 cells + ;
+: c-val 4 cells + ; : c-kind 5 cells + ; : c-title 6 cells + ;
+: c-rect ( c -- x1 y1 x2 y2 )
+   dup c-x @ over c-y @ rot dup c-x @ over c-w @ + swap dup c-y @ swap c-h @ + ;
+: white-px ( x y -- ) 2dup 1+ swap 1+ swap white 8 cur-bmap @ (fill) ;
+: draw-control { c | x y -- }
+   save-text  0 text-font !  12 text-size !  0 text-face !  1 text-mode !
+   c c-x @ -> x  c c-y @ -> y
+   c c-kind @ 0= if                                   \ pushbutton
+     c c-rect white 8 cur-bmap @ (fill)
+     1 1 pensize  8 penmode  black penpat
+     c c-rect frame rectangle
+     x y white-px                                     \ round the corners
+     x c c-w @ + 1- y white-px
+     x y c c-h @ + 1- white-px
+     x c c-w @ + 1- y c c-h @ + 1- white-px
+     x c c-w @ c c-title @ stringwidth - 2/ +  y 14 + pen-y ! pen-x !
+     c c-title @ count type
+   else                                               \ check box
+     x 2 + y 4 + x 14 + y 16 + white 8 cur-bmap @ (fill)
+     1 1 pensize  8 penmode  black penpat
+     x 2 + y 4 + x 14 + y 16 + frame rectangle
+     c c-val @ if
+       x 2 + y 4 + move.to  x 13 + y 15 + draw.to
+       x 13 + y 4 + move.to  x 2 + y 15 + draw.to
+     then
+   then
+   restore-text ;
+: binary.control { w x y t$ value kind | c -- ctl }
+   ctls nctls @ 7 * cells + -> c   1 nctls +!
+   x c c-x !  y c c-y !  kind c c-kind !  t$ c c-title !  0 c c-val !
+   kind 0= if t$ stringwidth 20 + c c-w !  20 c c-h !
+   else 125 c c-w !  20 c c-h ! then
+   c draw-control  c ;
+: get.control ( ctl -- v ) c-val @ ;
+: set.control ( ctl v -- ) swap tuck c-val !  draw-control ;
+: toggle.control ( ctl -- ) dup c-val @ 0= 1 and over c-val !  draw-control ;
 : hilite.control ( ? c -- ) 2drop ;
-: kill.controls ( w -- ) drop ;
-: this.control ( -- ? ) 0 ;
-: toggle.control ( c -- ) drop ;
-: track.control ( ? -- ? ) 0 ;
-: ?in.control ( -- f ) 0 ;
-variable ctl-counter
-: binary.control ( w x y title$ value kind -- ctl )
-   2drop drop 2drop drop  1 ctl-counter +!  ctl-counter @ ;
+: kill.controls ( w -- ) drop 0 nctls !  0 this.control ! ;
+: c-hit? { p c | px py -- f }
+   p point>xy -> py -> px
+   px c c-x @ < not  px c c-x @ c c-w @ + < and
+   py c c-y @ < not and  py c c-y @ c c-h @ + < and ;
+\ ?IN.CONTROL: did the last mouse-down land on a control?  Sets THIS.CONTROL.
+: ?in.control ( -- f )
+   mouse.was.. nctls @ 0 ?do
+     dup ctls i 7 * cells + c-hit? if
+       drop ctls i 7 * cells + this.control ! true unloop exit then
+   loop drop false ;
+\ TRACK.CONTROL: follow the button until release; true if released inside
+: track.control ( ctl pt -- f )
+   drop begin still.down while repeat  @mouse swap c-hit? ;
 
 \ ==================== sound ====================
 \ TONE ( duration volume freq*10 -- ): one square-wave note, duration in
@@ -308,14 +379,37 @@ create file-lens  16 cells allot  file-lens 16 cells erase
    else drop then ;
 : get.eof ( f# -- n ) ffd @ ?dup if file-size drop drop else 0 then ;
 variable cur-fd
+\ The 68000 was big-endian, so multi-byte numbers in the data files are
+\ too.  Rooms and robot programs are bytes; the one multi-byte structure
+\ is the per-robot stats block (screen 160: per adventure a 2-byte
+\ mission count, 4-byte total and 4-byte high score), which the game reads
+\ with native w@ and @; likewise each robot name's 2-byte length.
+\ loader.fs points 'stats-buf / 'names-buf at the game's buffers; reads
+\ into them are swapped after, writes from them go out swapped.
+variable 'stats-buf
+variable 'names-buf   \ Name$(: 16 x {2-byte length, 18 chars}, same rule
+: swap16 ( a -- ) dup c@ over 1+ c@ rot tuck c! 1+ c! ;
+: swap32 ( a -- ) dup swap16 dup 2+ swap16
+   dup w@ over 2+ w@ rot tuck w! 2+ w! ;
+: swap-stats ( a len -- )   \ 10-byte records: w, cell, cell
+   over + swap ?do i swap16 i 2+ swap32 i 6 + swap32 10 +loop ;
+create stats-out 128 allot
 : read.virtual { a len off f# -- }
    f# ffd @ ?dup if cur-fd !
      off 0 cur-fd @ reposition-file drop
      a len cur-fd @ read-file 2drop
+     a 'stats-buf @ = if a len swap-stats then
+     a 'names-buf @ dup 320 + within if a swap16 then
    then ;
 : write.virtual { a len off f# -- }
    f# ffd @ ?dup if cur-fd !
      off 0 cur-fd @ reposition-file drop
+     a 'stats-buf @ = len 128 <= and if
+       a stats-out len cmove  stats-out len swap-stats  stats-out -> a
+     then
+     a 'names-buf @ dup 320 + within len 128 <= and if
+       a stats-out len cmove  stats-out swap16  stats-out -> a
+     then
      a len cur-fd @ write-file drop
    then ;
 : read.fixed { a rec f# -- }

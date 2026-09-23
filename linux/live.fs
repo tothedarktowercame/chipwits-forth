@@ -51,28 +51,47 @@ variable disp-depth
 
 \ event records: [type][x][y][pad] as 16-bit LE:
 \ 1 mouse-down  2 mouse-up  3 mouse-move  4 key (x=char)  5 menu (x=menu# y=item#)
-\ (pump) is the single event source.  The game's polling loops (chip drags,
-\ name editing) never call DO.EVENTS -- on a Mac the mouse updated by
-\ interrupt -- so STILL.DOWN and @MOUSE pump too.
-: (pump) ( -- event|0 )
-   8 msec  1 tick +!   \ paces the whole game: ~60 do.events/s
-   tick @ 3 and 0= if push-frame then
-   read-event 0= if 0 exit then
+\ DO.EVENTS is the one place events are delivered.  The game's polling
+\ loops (chip drags, the name dialog) never call it -- on a Mac the mouse
+\ updated by interrupt -- so STILL.DOWN and @MOUSE also read the queue, but
+\ only apply motion, button-up and keys there.  A mouse-down or menu pick
+\ they meet is parked for the next DO.EVENTS: swallowing it would lose the
+\ click (the name dialog polls @mouse right before DO.EVENTS every pass).
+variable pend-t  variable pend-x  variable pend-y   \ pend-t 0 = none
+: pace ( -- )   8 msec  1 tick +!  tick @ 3 and 0= if push-frame then ;
+: next-event ( -- t x y true | false )
+   pend-t @ if pend-t @ pend-x @ pend-y @ true  0 pend-t ! exit then
+   read-event ;
+: apply-motion ( t x y -- )   \ types 2 3 4
+   rot case
+     2 of my ! mx ! 0 btn ! endof
+     3 of my ! mx ! endof
+     4 of drop keych ! keyf on endof
+     nip nip
+   endcase ;
+: (pump) ( -- event|0 )   \ DO.EVENTS: deliver one event
+   pace
+   next-event 0= if 0 exit then
    ev-y ! ev-x !
    case
      1 of ev-x @ mx !  ev-y @ my !  -1 btn !
           ev-x @ ev-y @ xy>point downpt !  push-frame  mouse.down endof
-     2 of ev-x @ mx !  ev-y @ my !  0 btn !  0 endof
-     3 of ev-x @ mx !  ev-y @ my !  0 endof
-     4 of ev-x @ keych !  keyf on  0 endof
      5 of ev-x @ ev-y @ menu-dispatch  push-frame  in.menubar endof
-     0 swap
+     dup ev-x @ ev-y @ apply-motion  0 swap
    endcase ;
+: (poll) ( -- )   \ @MOUSE / STILL.DOWN: motion only
+   pace
+   pend-t @ if exit then
+   begin read-event while
+     rot dup >r -rot r>        \ t x y t  (no PICK: the shim's is 1-based)
+     dup 1 = swap 5 = or if pend-y ! pend-x ! pend-t ! exit then
+     apply-motion
+   repeat ;
 
 : live-events ( -- event|0 ) (pump) ;
-: live-@mouse ( -- p ) (pump) drop  mx @ my @ xy>point ;
+: live-@mouse ( -- p ) (poll)  mx @ my @ xy>point ;
 : live-was ( -- p ) downpt @ ;
-: live-down? ( -- f ) (pump) drop  btn @ ;
+: live-down? ( -- f ) (poll)  btn @ ;
 : live-key ( -- 0 | c -1 ) keyf @ if keych @ -1 keyf off else 0 then ;
 
 : live-close ( -- )

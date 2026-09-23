@@ -28,5 +28,6 @@ gameboard.window select.window
 ." [master] "    73 75 thru
 sys.window select.window
 gameboard.window on.activate
+stats( 'stats-buf !  name$( 'names-buf !   \ big-endian on disk: see read.virtual
 cr ." === ChipWits+ compiled === " cr
 \ note: graphics text is left OFF (-gfx); tests turn it on around game calls

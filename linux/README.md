@@ -25,6 +25,8 @@ ImageMagick only if you regenerate the art.
     ./play.sh       # the game: Forth runs in this terminal,
                     # UI at http://localhost:8047 (./play.sh PORT to change)
     ./run-test.sh   # headless VM smoke test: a wall-following robot
+    pforth/platforms/unix/pforth test-mission.fs
+                    # 3000-instruction mission, stack depth checked
 
 In the browser, pick **Games > Start / End Mission**.  Sound starts with
 your first click or key (browsers keep pages silent until then);
@@ -41,9 +43,12 @@ bump = 50 damage).
 
 ## Status
 
-**Playable in the browser.**  The original master word (`CHIPWITS`) runs
-the whole show: start missions from the Games menu, watch the robot run
-with the live debug trace, open the Workshop and edit chips with the mouse
+**Playable in the browser, verified end to end** by driving the page with
+Playwright: pick a robot from the Warehouse, enter the Workshop, burn
+chips (operator, then argument), save it through the Name dialog (name,
+environment check boxes, OK), run a mission and watch it execute the new
+program; the page itself explains how to play.  The original master word
+(`CHIPWITS`) runs the whole show
 ([`docs/native-linux-workshop.png`](docs/native-linux-workshop.png) shows
 Doug Sharp's saved robot program rendered as its wired chip network).
 Options > Quit exits cleanly.  A websocket carries everything: `serve.py`
@@ -67,12 +72,23 @@ opened (a proxy that refuses upgrades), the page falls back to polling
 - Sound: `TONE ( ticks volume freq×10 )` notes queue like the Mac sound
   driver's and play in the browser as square waves; `?SOUND` tracks the
   queue against a real clock (a `CMSEC` C primitive), so the game's
-  `begin ?sound not until` waits take the time they did on a Mac.  The hot loops (CBLIT /
-  CFILLPAT) are C primitives compiled into pforth via `pfcustom.c` —
-  full startup takes ~0.1 s; `live.fs` paces the game at ~60 events/s.
-- Events are pumped MacForth-style: `STILL.DOWN` and `@MOUSE` consume the
-  queue themselves, since the game's drag loops poll them without calling
-  `DO.EVENTS` (on a Mac the mouse updated by interrupt).
+  `begin ?sound not until` waits take the time they did on a Mac.
+- Speed: the hot loops (CBLIT / CFILLPAT) are C primitives compiled into
+  pforth via `pfcustom.c` — full startup takes ~0.1 s; `live.fs` paces
+  the game at ~60 events/s.
+- Events: `DO.EVENTS` delivers them.  The game's polling loops (chip
+  drags, the name dialog) never call it — on a Mac the mouse updated by
+  interrupt — so `STILL.DOWN` and `@MOUSE` read the queue too, applying
+  motion, button-up and keys but parking a click or menu pick for the next
+  `DO.EVENTS` (swallowing it lost every click in the name dialog).
+- Controls and TextEdit are real: the Name dialog's OK/Cancel buttons and
+  environment check boxes draw, hit-test, track and toggle; the name field
+  takes typing and backspace with a caret.
+- `ClipRect` is honoured (the board is fenced while the robot is drawn), and
+  `PATTERN` fills paint the gray desktop and wipe window interiors.
+- The data files are big-endian (68000): the stats and name lengths in
+  `CW` are swapped at the file boundary, so the Stats window and robot
+  names read and save correctly.
 - Menu picks dispatch through `MENU.SELECTION:` handlers in the original
   code (`menu-item`/`menu-mode` + calling the menu word).
 
@@ -117,6 +133,7 @@ final source itself disables.
 - `tools/extract_assets.py`, `assets/` — the reusable art (see above)
 - `test-vm.fs` — headless VM smoke test
 - `test-render.fs` — full startup + gameplay, saving PBM screenshots
+- `test-mission.fs` — long mission; fails on any stack drift
 - `docs/` — the screenshots used in this README
 - `screens/`, `data/`, `pforth/`, `live/` — generated (gitignored)
 
@@ -175,3 +192,11 @@ final source itself disables.
   `MOVE.ARM`'s loop limit multiplies by it.  Trust the stack, not the comments.
 - pforth gotcha: a second `{ ... }` locals block mid-definition compiles
   silently but corrupts execution — one block per word.
+- `XYOFFSET ( x y -- )` / `XYPIVOT ( angle -- )` set a turtle frame for
+  `MOVE.TO`/`DRAW.TO` (pivot in degrees, clockwise on screen); `@PEN` stays
+  in port coordinates.  A two-cell `XYPIVOT` leaked a stack cell per
+  `PICKUP` until the stack underflowed into the heap — the segfault a few
+  minutes into a mission.
+- `PATTERN ( pat -- verb )` is a shape verb: `gray pattern rectangle`.
+- Anything compiled after the shim (live.fs, tests) gets its fig-style
+  1-based `PICK`: `2 pick` there is the *second* item.
